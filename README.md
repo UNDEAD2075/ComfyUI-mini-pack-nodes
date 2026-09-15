@@ -1,6 +1,3 @@
-# `ComfyUI-mini-pack-nodes`
-
-```markdown
 # ComfyUI-mini-pack-nodes
 
 A compact collection of utility nodes for ComfyUI workflows.
