@@ -841,6 +841,8 @@ TAESD is intended for fast preview decoding. For final-quality output, use the f
 
 ---
 
+# Русский README
+
 ```markdown
 # ComfyUI-mini-pack-nodes
 
