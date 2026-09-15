@@ -1774,3 +1774,1027 @@ NODE_DISPLAY_NAME_MAPPINGS = {
         "Fast TAESD Decode Batched V1"
     ),
 }
+import os
+import random
+import importlib.util
+from pathlib import Path
+
+import torch
+import folder_paths
+import comfy.utils
+import comfy.model_management
+
+from comfy.taesd.taesd import TAESD
+
+# ============================================================
+# Пути
+# ============================================================
+
+NODE_FOLDER = Path(__file__).resolve().parent
+PROMPT_LISTS_FOLDER = NODE_FOLDER / "prompt_lists"
+
+NONE_LIST = "[None]"
+NONE_MODE = "disabled"
+
+# ============================================================
+# Загрузка старых нод
+# ============================================================
+
+def load_legacy_nodes():
+    """
+    Загружает предыдущую версию __init__.py из legacy_nodes.py,
+    чтобы уже установленные ноды не исчезли.
+    """
+
+    legacy_path = NODE_FOLDER / "legacy_nodes.py"
+
+    if not legacy_path.exists():
+        return {}, {}
+
+    try:
+        module_name = (
+            "ComfyUI_LocalWorkflowTools_legacy"
+        )
+
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            str(legacy_path),
+        )
+
+        if spec is None or spec.loader is None:
+            print(
+                "[LocalWorkflowTools] "
+                "Cannot load legacy_nodes.py"
+            )
+            return {}, {}
+
+        legacy_module = (
+            importlib.util.module_from_spec(spec)
+        )
+
+        spec.loader.exec_module(legacy_module)
+
+        old_class_mappings = getattr(
+            legacy_module,
+            "NODE_CLASS_MAPPINGS",
+            {},
+        )
+
+        old_display_mappings = getattr(
+            legacy_module,
+            "NODE_DISPLAY_NAME_MAPPINGS",
+            {},
+        )
+
+        print(
+            "[LocalWorkflowTools] "
+            f"Loaded legacy nodes: "
+            f"{len(old_class_mappings)}"
+        )
+
+        return (
+            dict(old_class_mappings),
+            dict(old_display_mappings),
+        )
+
+    except Exception as error:
+        print(
+            "[LocalWorkflowTools] "
+            f"Legacy nodes were not loaded: {error}"
+        )
+
+        return {}, {}
+
+LEGACY_NODE_CLASS_MAPPINGS, \
+LEGACY_NODE_DISPLAY_NAME_MAPPINGS = (
+    load_legacy_nodes()
+)
+
+# ============================================================
+# Общие функции для TXT-списков
+# ============================================================
+
+def ensure_prompt_lists_folder():
+    PROMPT_LISTS_FOLDER.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+def available_prompt_lists():
+    """
+    Возвращает список TXT-файлов внутри prompt_lists.
+    """
+
+    ensure_prompt_lists_folder()
+
+    files = []
+
+    for path in PROMPT_LISTS_FOLDER.rglob("*.txt"):
+        if path.is_file():
+            relative = path.relative_to(
+                PROMPT_LISTS_FOLDER
+            )
+
+            files.append(
+                relative.as_posix()
+            )
+
+    files.sort(
+        key=lambda item: item.casefold()
+    )
+
+    return files
+
+def read_prompt_list(filename):
+    """
+    Каждая непустая строка TXT-файла —
+    отдельный вариант для случайного выбора.
+
+    Строки, начинающиеся с #, считаются комментариями.
+    """
+
+    if not filename or filename == NONE_LIST:
+        return []
+
+    path = (
+        PROMPT_LISTS_FOLDER / filename
+    ).resolve()
+
+    try:
+        path.relative_to(
+            PROMPT_LISTS_FOLDER.resolve()
+        )
+
+    except ValueError:
+        raise ValueError(
+            "Invalid prompt list path."
+        )
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Prompt list not found: {path}"
+        )
+
+    result = []
+
+    with path.open(
+        "r",
+        encoding="utf-8-sig",
+    ) as file:
+        for raw_line in file:
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            if line.startswith("#"):
+                continue
+
+            result.append(line)
+
+    return result
+
+def clean_prompt_part(value):
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+def combine_prompt_parts(
+    parts,
+    separator="\n\n",
+):
+    cleaned = []
+
+    for part in parts:
+        part = clean_prompt_part(part)
+
+        if part:
+            cleaned.append(part)
+
+    return separator.join(cleaned)
+
+# ============================================================
+# Prompt Randomizer 10 — TXT
+# ============================================================
+
+class LocalPromptRandomizer10TXT:
+    """
+    Выбирает по одной строке из десяти TXT-списков.
+
+    Для каждого слота доступны режимы:
+
+    disabled:
+        слот выключен;
+
+    random:
+        случайная строка из TXT;
+
+    fixed:
+        конкретная строка по номеру.
+
+    randomize_each_queue=True:
+        новый случайный набор при каждом запуске.
+
+    randomize_each_queue=False:
+        результат зависит от seed и воспроизводим.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        ensure_prompt_lists_folder()
+
+        list_choices = [
+            NONE_LIST
+        ] + available_prompt_lists()
+
+        required = {
+            "seed": (
+                "INT",
+                {
+                    "default": 123456789,
+                    "min": 0,
+                    "max": 0x7FFFFFFFFFFFFFFF,
+                    "step": 1,
+                },
+            ),
+            "randomize_each_queue": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                },
+            ),
+            "extra_prompt": (
+                "STRING",
+                {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                },
+            ),
+        }
+
+        for index in range(1, 11):
+            required[
+                f"list_{index}"
+            ] = (
+                list_choices,
+                {
+                    "default": NONE_LIST,
+                },
+            )
+
+            required[
+                f"mode_{index}"
+            ] = (
+                [
+                    "disabled",
+                    "random",
+                    "fixed",
+                ],
+                {
+                    "default": "disabled",
+                },
+            )
+
+            required[
+                f"line_{index}"
+            ] = (
+                "INT",
+                {
+                    "default": 1,
+                    "min": 1,
+                    "max": 100000,
+                    "step": 1,
+                },
+            )
+
+        return {
+            "required": required,
+        }
+
+    RETURN_TYPES = (
+        "STRING",
+        "STRING",
+    )
+
+    RETURN_NAMES = (
+        "prompt",
+        "info",
+    )
+
+    FUNCTION = "generate_prompt"
+
+    CATEGORY = "Local Tools/Prompt"
+
+    DESCRIPTION = (
+        "Chooses prompt fragments from up to "
+        "10 TXT lists."
+    )
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        """
+        Если включён randomize_each_queue,
+        ComfyUI не должен возвращать старый cached output.
+        """
+
+        if kwargs.get(
+            "randomize_each_queue",
+            True,
+        ):
+            return float("nan")
+
+        return ""
+
+    def generate_prompt(
+        self,
+        seed,
+        randomize_each_queue,
+        extra_prompt,
+        **kwargs,
+    ):
+        ensure_prompt_lists_folder()
+
+        if randomize_each_queue:
+            chooser = random.SystemRandom()
+
+        else:
+            chooser = random.Random(
+                int(seed)
+            )
+
+        selected = []
+        info_lines = []
+
+        extra_prompt = clean_prompt_part(
+            extra_prompt
+        )
+
+        if extra_prompt:
+            selected.append(extra_prompt)
+
+            info_lines.append(
+                "[extra_prompt] "
+                + extra_prompt
+            )
+
+        for index in range(1, 11):
+            filename = kwargs.get(
+                f"list_{index}",
+                NONE_LIST,
+            )
+
+            mode = kwargs.get(
+                f"mode_{index}",
+                "disabled",
+            )
+
+            line_number = int(
+                kwargs.get(
+                    f"line_{index}",
+                    1,
+                )
+            )
+
+            if (
+                mode == "disabled"
+                or not filename
+                or filename == NONE_LIST
+            ):
+                continue
+
+            lines = read_prompt_list(
+                filename
+            )
+
+            if not lines:
+                info_lines.append(
+                    f"[slot {index}] "
+                    f"{filename}: empty"
+                )
+
+                continue
+
+            if mode == "random":
+                selected_line = chooser.choice(
+                    lines
+                )
+
+                selected_number = (
+                    lines.index(selected_line) + 1
+                )
+
+            elif mode == "fixed":
+                selected_number = max(
+                    1,
+                    min(
+                        line_number,
+                        len(lines),
+                    ),
+                )
+
+                selected_line = (
+                    lines[selected_number - 1]
+                )
+
+            else:
+                continue
+
+            selected.append(selected_line)
+
+            info_lines.append(
+                f"[slot {index}] "
+                f"{filename} | "
+                f"{mode} | "
+                f"line {selected_number}: "
+                f"{selected_line}"
+            )
+
+        prompt = combine_prompt_parts(
+            selected,
+            separator=", ",
+        )
+
+        if not prompt:
+            prompt = ""
+
+        info = (
+            f"seed={seed} | "
+            f"randomize_each_queue="
+            f"{randomize_each_queue}\n"
+        )
+
+        if info_lines:
+            info += "\n".join(info_lines)
+
+        else:
+            info += "No prompt fragments selected."
+
+        return (
+            prompt,
+            info,
+        )
+
+# ============================================================
+# CLIP Text Encode 2-Part
+# ============================================================
+
+class LocalCLIPTextEncode2Part:
+    """
+    Разделённый CLIP Text Encode.
+
+    quality_prompt:
+        постоянные параметры качества и стиля;
+
+    character_prompt:
+        описание персонажа;
+
+    random_prompt:
+        выход Prompt Randomizer 10 — TXT.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip": (
+                    "CLIP",
+                    {},
+                ),
+                "quality_prompt": (
+                    "STRING",
+                    {
+                        "default": (
+                            "masterpiece:1.2, "
+                            "high quality, "
+                            "best quality, "
+                            "aesthetic"
+                        ),
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                    },
+                ),
+                "character_prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                    },
+                ),
+            },
+            "optional": {
+                "random_prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "forceInput": True,
+                        "dynamicPrompts": True,
+                    },
+                ),
+            },
+        }
+
+    RETURN_TYPES = (
+        "CONDITIONING",
+        "STRING",
+    )
+
+    RETURN_NAMES = (
+        "conditioning",
+        "combined_prompt",
+    )
+
+    FUNCTION = "encode"
+
+    CATEGORY = "Local Tools/Conditioning"
+
+    DESCRIPTION = (
+        "Encodes quality, character and "
+        "random prompt separately."
+    )
+
+    def encode(
+        self,
+        clip,
+        quality_prompt,
+        character_prompt,
+        random_prompt="",
+    ):
+        if clip is None:
+            raise RuntimeError(
+                "CLIP input is invalid."
+            )
+
+        combined_prompt = (
+            combine_prompt_parts(
+                [
+                    quality_prompt,
+                    character_prompt,
+                    random_prompt,
+                ],
+                separator="\n\n",
+            )
+        )
+
+        tokens = clip.tokenize(
+            combined_prompt
+        )
+
+        conditioning = (
+            clip.encode_from_tokens_scheduled(
+                tokens
+            )
+        )
+
+        return (
+            conditioning,
+            combined_prompt,
+        )
+
+# ============================================================
+# Fast TAESD Decode Batched V1
+# ============================================================
+
+class LocalFastTAESDDecodeBatchedV1:
+    """
+    Быстрый тайловый TAESD decoder.
+
+    Поддерживает:
+        taesd   — SD 1.5;
+        taesdxl — SDXL.
+
+    Использует только decoder из:
+        models/vae_approx
+    """
+
+    _cache = {}
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "samples": (
+                    "LATENT",
+                    {},
+                ),
+                "taesd_model": (
+                    [
+                        "taesd",
+                        "taesdxl",
+                    ],
+                    {
+                        "default": "taesd",
+                    },
+                ),
+                "tile_size": (
+                    "INT",
+                    {
+                        "default": 512,
+                        "min": 64,
+                        "max": 4096,
+                        "step": 64,
+                    },
+                ),
+                "overlap": (
+                    "INT",
+                    {
+                        "default": 32,
+                        "min": 0,
+                        "max": 2048,
+                        "step": 8,
+                    },
+                ),
+                "batch_tiles": (
+                    "INT",
+                    {
+                        "default": 2,
+                        "min": 1,
+                        "max": 16,
+                        "step": 1,
+                    },
+                ),
+                "precision": (
+                    [
+                        "fp16",
+                        "fp32",
+                    ],
+                    {
+                        "default": "fp16",
+                    },
+                ),
+                "output_device": (
+                    [
+                        "gpu",
+                        "cpu",
+                    ],
+                    {
+                        "default": "gpu",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = (
+        "IMAGE",
+    )
+
+    RETURN_NAMES = (
+        "image",
+    )
+
+    FUNCTION = "decode"
+
+    CATEGORY = "Local Tools/TAESD"
+
+    DESCRIPTION = (
+        "Fast tiled TAESD decoder."
+    )
+
+    @classmethod
+    def find_decoder(cls, taesd_model):
+        files = folder_paths.get_filename_list(
+            "vae_approx"
+        )
+
+        prefix = (
+            f"{taesd_model}_decoder."
+        )
+
+        candidates = [
+            filename
+            for filename in files
+            if filename.startswith(prefix)
+        ]
+
+        if not candidates:
+            raise FileNotFoundError(
+                "TAESD decoder not found.\n\n"
+                f"Expected:\n"
+                f"models/vae_approx/"
+                f"{taesd_model}_decoder.pth\n"
+                f"or:\n"
+                f"models/vae_approx/"
+                f"{taesd_model}_decoder.safetensors"
+            )
+
+        return folder_paths.get_full_path_or_raise(
+            "vae_approx",
+            candidates[0],
+        )
+
+    @classmethod
+    def get_decoder(
+        cls,
+        taesd_model,
+        precision,
+        output_device,
+    ):
+        decoder_path = cls.find_decoder(
+            taesd_model
+        )
+
+        device = (
+            comfy.model_management
+            .get_torch_device()
+            if output_device == "gpu"
+            else torch.device("cpu")
+        )
+
+        if isinstance(device, str):
+            device = torch.device(device)
+
+        if (
+            precision == "fp16"
+            and device.type != "cpu"
+        ):
+            dtype = torch.float16
+
+        else:
+            dtype = torch.float32
+
+        cache_key = (
+            decoder_path,
+            taesd_model,
+            str(device),
+            str(dtype),
+        )
+
+        if cache_key not in cls._cache:
+            decoder = TAESD(
+                encoder_path=None,
+                decoder_path=decoder_path,
+                latent_channels=4,
+            )
+
+            decoder.eval()
+
+            decoder.to(
+                device=device,
+                dtype=dtype,
+            )
+
+            if taesd_model == "taesd":
+                scale = 0.18215
+                shift = 0.0
+
+            elif taesd_model == "taesdxl":
+                scale = 0.13025
+                shift = 0.0
+
+            else:
+                scale = 1.0
+                shift = 0.0
+
+            with torch.no_grad():
+                decoder.vae_scale.data.fill_(
+                    scale
+                )
+
+                decoder.vae_shift.data.fill_(
+                    shift
+                )
+
+            cls._cache[cache_key] = (
+                decoder,
+                device,
+                dtype,
+            )
+
+        return cls._cache[cache_key]
+
+    @staticmethod
+    def tile_parameters(
+        tile_size,
+        overlap,
+    ):
+        # TAESD декодирует latent с увеличением 8x.
+        tile_latent = max(
+            8,
+            int(tile_size) // 8,
+        )
+
+        overlap_latent = max(
+            0,
+            int(overlap) // 8,
+        )
+
+        if overlap_latent >= tile_latent:
+            overlap_latent = max(
+                0,
+                tile_latent // 2,
+            )
+
+        return (
+            tile_latent,
+            overlap_latent,
+        )
+
+    @staticmethod
+    def convert_latent_shape(latent):
+        if latent.ndim == 5:
+            # Для видео/temporal latent.
+            latent = latent[:, :, 0]
+
+        if latent.ndim != 4:
+            raise ValueError(
+                "Expected latent shape "
+                "[B,C,H,W], got "
+                f"{tuple(latent.shape)}"
+            )
+
+        return latent
+
+    def decode_part(
+        self,
+        decoder,
+        latent_part,
+        tile_latent,
+        overlap_latent,
+        device,
+        dtype,
+        output_device,
+    ):
+        latent_part = latent_part.to(
+            device=device,
+            dtype=dtype,
+        ).contiguous()
+
+        def decode_tile(tile):
+            tile = tile.to(
+                device=device,
+                dtype=dtype,
+            ).contiguous()
+
+            result = decoder.decode(tile)
+
+            return result.float()
+
+        return comfy.utils.tiled_scale(
+            latent_part,
+            decode_tile,
+            tile_x=tile_latent,
+            tile_y=tile_latent,
+            overlap=overlap_latent,
+            upscale_amount=8,
+            out_channels=3,
+            output_device=output_device,
+        )
+
+    def decode(
+        self,
+        samples,
+        taesd_model,
+        tile_size,
+        overlap,
+        batch_tiles,
+        precision,
+        output_device,
+    ):
+        if not isinstance(samples, dict):
+            raise TypeError(
+                "Fast TAESD expects LATENT."
+            )
+
+        latent = samples.get("samples")
+
+        if latent is None:
+            raise ValueError(
+                "LATENT does not contain samples."
+            )
+
+        latent = self.convert_latent_shape(
+            latent
+        )
+
+        decoder, device, dtype = (
+            self.get_decoder(
+                taesd_model=taesd_model,
+                precision=precision,
+                output_device=output_device,
+            )
+        )
+
+        if output_device == "gpu":
+            tiled_output_device = device
+
+        else:
+            tiled_output_device = torch.device(
+                "cpu"
+            )
+
+        tile_latent, overlap_latent = (
+            self.tile_parameters(
+                tile_size,
+                overlap,
+            )
+        )
+
+        chunk_size = max(
+            1,
+            int(batch_tiles),
+        )
+
+        parts = []
+
+        with torch.inference_mode():
+            for start in range(
+                0,
+                latent.shape[0],
+                chunk_size,
+            ):
+                end = start + chunk_size
+
+                latent_part = latent[start:end]
+
+                decoded = self.decode_part(
+                    decoder=decoder,
+                    latent_part=latent_part,
+                    tile_latent=tile_latent,
+                    overlap_latent=overlap_latent,
+                    device=device,
+                    dtype=dtype,
+                    output_device=tiled_output_device,
+                )
+
+                parts.append(decoded)
+
+        if not parts:
+            raise RuntimeError(
+                "TAESD returned no image."
+            )
+
+        image = torch.cat(
+            parts,
+            dim=0,
+        )
+
+        # TAESD output is approximately [-1, 1].
+        image = (
+            (image.float() + 1.0) / 2.0
+        ).clamp(
+            0.0,
+            1.0,
+        )
+
+        # ComfyUI IMAGE format: B,H,W,C.
+        image = image.movedim(
+            1,
+            -1,
+        ).contiguous()
+
+        return (
+            image,
+        )
+
+# ============================================================
+# Registration
+# ============================================================
+
+NODE_CLASS_MAPPINGS = dict(
+    LEGACY_NODE_CLASS_MAPPINGS
+)
+
+NODE_DISPLAY_NAME_MAPPINGS = dict(
+    LEGACY_NODE_DISPLAY_NAME_MAPPINGS
+)
+
+NODE_CLASS_MAPPINGS.update(
+    {
+        "LocalPromptRandomizer10TXT": (
+            LocalPromptRandomizer10TXT
+        ),
+        "LocalCLIPTextEncode2Part": (
+            LocalCLIPTextEncode2Part
+        ),
+        "LocalFastTAESDDecodeBatchedV1": (
+            LocalFastTAESDDecodeBatchedV1
+        ),
+    }
+)
+
+NODE_DISPLAY_NAME_MAPPINGS.update(
+    {
+        "LocalPromptRandomizer10TXT": (
+            "Prompt Randomizer 10 - TXT"
+        ),
+        "LocalCLIPTextEncode2Part": (
+            "CLIP Text Encode 2-Part"
+        ),
+        "LocalFastTAESDDecodeBatchedV1": (
+            "Fast TAESD Decode Batched V1"
+        ),
+    }
+)
+
+print(
+    "[LocalWorkflowTools] "
+    "Prompt Randomizer 10 - TXT loaded"
+)
+
+print(
+    "[LocalWorkflowTools] "
+    "CLIP Text Encode 2-Part loaded"
+)
