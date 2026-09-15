@@ -2,6 +2,11 @@ import json
 import logging
 import math
 
+import os
+import random
+import importlib.util
+from pathlib import Path
+
 import torch
 
 import folder_paths
@@ -11,7 +16,7 @@ import comfy.model_management
 
 from comfy.taesd.taesd import TAESD
 
-LOGGER = logging.getLogger("ComfyUI-LocalWorkflowTools")
+LOGGER = logging.getLogger("ComfyUI-mini-pack-nodes")
 
 NONE_LORA = "[None]"
 MAX_DIMENSION = 8192
@@ -1313,7 +1318,7 @@ class LocalCheckpointLoaderNoVAE:
 # 8. Fast TAESD Decode Batched V1
 # ============================================================
 
-class LocalFastTAESDDecodeBatchedV1:
+class LocalFastTAESDDecodeBatchedV1Legacy:
     """
     Fast tiled TAESD decoder.
 
@@ -1718,75 +1723,6 @@ class LocalFastTAESDDecodeBatchedV1:
         )
 
 # ============================================================
-# Registration
-# ============================================================
-
-NODE_CLASS_MAPPINGS = {
-    "LocalResolutionPreset": (
-        LocalResolutionPreset
-    ),
-    "LocalLoRATriggerWords": (
-        LocalLoRATriggerWords
-    ),
-    "LocalLoRAStack10": (
-        LocalLoRAStack10
-    ),
-    "LocalLatentUpscaleExact": (
-        LocalLatentUpscaleExact
-    ),
-    "LocalPromptPreset": (
-        LocalPromptPreset
-    ),
-    "LocalPromptCombine": (
-        LocalPromptCombine
-    ),
-    "LocalCheckpointLoaderNoVAE": (
-        LocalCheckpointLoaderNoVAE
-    ),
-    "LocalFastTAESDDecodeBatchedV1": (
-        LocalFastTAESDDecodeBatchedV1
-    ),
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "LocalResolutionPreset": (
-        "Resolution Preset SDXL / SD1.5"
-    ),
-    "LocalLoRATriggerWords": (
-        "LoRA Trigger Words"
-    ),
-    "LocalLoRAStack10": (
-        "LoRA Stack 10"
-    ),
-    "LocalLatentUpscaleExact": (
-        "Latent Upscale Exact Size"
-    ),
-    "LocalPromptPreset": (
-        "Prompt Preset"
-    ),
-    "LocalPromptCombine": (
-        "Prompt Combine"
-    ),
-    "LocalCheckpointLoaderNoVAE": (
-        "Checkpoint Loader - No VAE"
-    ),
-    "LocalFastTAESDDecodeBatchedV1": (
-        "Fast TAESD Decode Batched V1"
-    ),
-}
-import os
-import random
-import importlib.util
-from pathlib import Path
-
-import torch
-import folder_paths
-import comfy.utils
-import comfy.model_management
-
-from comfy.taesd.taesd import TAESD
-
-# ============================================================
 # Пути
 # ============================================================
 
@@ -1813,7 +1749,7 @@ def load_legacy_nodes():
 
     try:
         module_name = (
-            "ComfyUI_LocalWorkflowTools_legacy"
+            "ComfyUI_mini_pack_nodes_legacy"
         )
 
         spec = importlib.util.spec_from_file_location(
@@ -1823,7 +1759,7 @@ def load_legacy_nodes():
 
         if spec is None or spec.loader is None:
             print(
-                "[LocalWorkflowTools] "
+                "[mini-pack-nodes] "
                 "Cannot load legacy_nodes.py"
             )
             return {}, {}
@@ -1847,7 +1783,7 @@ def load_legacy_nodes():
         )
 
         print(
-            "[LocalWorkflowTools] "
+            "[mini-pack-nodes] "
             f"Loaded legacy nodes: "
             f"{len(old_class_mappings)}"
         )
@@ -1859,7 +1795,7 @@ def load_legacy_nodes():
 
     except Exception as error:
         print(
-            "[LocalWorkflowTools] "
+            "[mini-pack-nodes] "
             f"Legacy nodes were not loaded: {error}"
         )
 
@@ -2763,6 +2699,30 @@ NODE_DISPLAY_NAME_MAPPINGS = dict(
 
 NODE_CLASS_MAPPINGS.update(
     {
+        "LocalResolutionPreset": (
+            LocalResolutionPreset
+        ),
+        "LocalLoRATriggerWords": (
+            LocalLoRATriggerWords
+        ),
+        "LocalLoRAStack10": (
+            LocalLoRAStack10
+        ),
+        "LocalLatentUpscaleExact": (
+            LocalLatentUpscaleExact
+        ),
+        "LocalPromptPreset": (
+            LocalPromptPreset
+        ),
+        "LocalPromptCombine": (
+            LocalPromptCombine
+        ),
+        "LocalCheckpointLoaderNoVAE": (
+            LocalCheckpointLoaderNoVAE
+        ),
+        "LocalFastTAESDDecodeBatchedV1Legacy": (
+            LocalFastTAESDDecodeBatchedV1Legacy
+        ),
         "LocalPromptRandomizer10TXT": (
             LocalPromptRandomizer10TXT
         ),
@@ -2777,6 +2737,30 @@ NODE_CLASS_MAPPINGS.update(
 
 NODE_DISPLAY_NAME_MAPPINGS.update(
     {
+        "LocalResolutionPreset": (
+            "Resolution Preset SDXL / SD1.5"
+        ),
+        "LocalLoRATriggerWords": (
+            "LoRA Trigger Words"
+        ),
+        "LocalLoRAStack10": (
+            "LoRA Stack 10"
+        ),
+        "LocalLatentUpscaleExact": (
+            "Latent Upscale Exact Size"
+        ),
+        "LocalPromptPreset": (
+            "Prompt Preset"
+        ),
+        "LocalPromptCombine": (
+            "Prompt Combine"
+        ),
+        "LocalCheckpointLoaderNoVAE": (
+            "Checkpoint Loader - No VAE"
+        ),
+        "LocalFastTAESDDecodeBatchedV1Legacy": (
+            "Fast TAESD Decode Batched V1 - Legacy"
+        ),
         "LocalPromptRandomizer10TXT": (
             "Prompt Randomizer 10 - TXT"
         ),
@@ -2790,11 +2774,11 @@ NODE_DISPLAY_NAME_MAPPINGS.update(
 )
 
 print(
-    "[LocalWorkflowTools] "
+    "[mini-pack-nodes] "
     "Prompt Randomizer 10 - TXT loaded"
 )
 
 print(
-    "[LocalWorkflowTools] "
+    "[mini-pack-nodes] "
     "CLIP Text Encode 2-Part loaded"
 )
